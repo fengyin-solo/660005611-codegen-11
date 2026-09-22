@@ -17,3 +17,25 @@
 5. 重试机制：可配置最大重试次数、指数退避延迟
 6. 执行监控：ECharts甘特图时间线渲染、实时WebSocket推送任务状态
 7. 熔断保护：连续失败阈值触发熔断，冷却时间后自动恢复
+8. 执行报表（SQLite 持久化）：
+   - 按环节汇总每次执行的处理条数、处理耗时与耗时占比，支持时间范围/状态筛选、任意列排序与分页
+   - 执行明细逐条核对：汇总、明细、趋势共用同一套筛选 SQL，两处口径完全一致；分页只改展示行，总数恒定
+   - 最近若干次执行的耗时趋势对照（ECharts 折线，未到达的环节以断点展示）
+   - 无数据环节通过维度表 LEFT JOIN 按 0 参与聚合，不会整段丢失
+   - 筛选/分页/排序状态保存在 Pinia，切到别的视图再回来仍然保留
+   - 首次启动自动播种演示历史数据；也可用 `POST /api/report/seed` 重新生成
+
+## 启动
+```bash
+# 后端 (默认 8000)
+cd backend && pip install -r requirements.txt && uvicorn app.main:app --port 8000
+
+# 前端 (默认 3000, /api 与 /ws 已代理到 8000)
+cd frontend && npm install && npm run dev
+```
+
+## 报表 API
+- `GET /api/report/summary?startTime=&endTime=&status=&page=&pageSize=&sortBy=&sortOrder=` 环节汇总（含 overall 总计）
+- `GET /api/report/details?startTime=&endTime=&status=&taskId=&page=&pageSize=` 逐条明细（含同口径 totals 供核对）
+- `GET /api/report/trend?startTime=&endTime=&status=&taskId=...&limit=` 最近 N 次执行趋势（taskId 可重复传）
+- `GET /api/report/stages` 环节维度；`POST /api/report/seed` 生成演示数据

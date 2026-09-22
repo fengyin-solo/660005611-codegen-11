@@ -3,19 +3,26 @@
     <header class="top-bar">
       <h1>🔀 分布式任务工作流DAG编排与执行引擎</h1>
       <div class="tools">
-        <el-input v-model="wfName" placeholder="工作流名称" size="small" style="width:160px"/>
-        <el-button size="small" @click="create" :loading="store.loading">创建DAG</el-button>
-        <el-select v-model="store.workers" size="small" style="width:100px">
-          <el-option :value="1" label="1 Worker"/><el-option :value="3" label="3 Workers"/><el-option :value="5" label="5 Workers"/>
-        </el-select>
-        <el-select v-model="store.strategy" size="small" style="width:100px">
-          <el-option value="fifo" label="FIFO"/><el-option value="priority" label="优先级"/><el-option value="max_concurrent" label="最大并发"/>
-        </el-select>
-        <el-button type="success" size="small" @click="run" :disabled="!store.workflow" :loading="store.loading">▶ 执行</el-button>
-        <span class="ws-dot" :class="{on:store.wsConnected}"></span>
+        <el-radio-group v-model="activeView" size="small">
+          <el-radio-button value="monitor">🖥 执行监控</el-radio-button>
+          <el-radio-button value="report">📋 执行报表</el-radio-button>
+        </el-radio-group>
+        <template v-if="activeView === 'monitor'">
+          <el-input v-model="wfName" placeholder="工作流名称" size="small" style="width:160px"/>
+          <el-button size="small" @click="create" :loading="store.loading">创建DAG</el-button>
+          <el-select v-model="store.workers" size="small" style="width:100px">
+            <el-option :value="1" label="1 Worker"/><el-option :value="3" label="3 Workers"/><el-option :value="5" label="5 Workers"/>
+          </el-select>
+          <el-select v-model="store.strategy" size="small" style="width:100px">
+            <el-option value="fifo" label="FIFO"/><el-option value="priority" label="优先级"/><el-option value="max_concurrent" label="最大并发"/>
+          </el-select>
+          <el-button type="success" size="small" @click="run" :disabled="!store.workflow" :loading="store.loading">▶ 执行</el-button>
+        </template>
+        <span class="ws-dot" :class="{on:store.wsConnected}" title="WebSocket"></span>
       </div>
     </header>
-    <div class="main-grid">
+
+    <div v-if="activeView === 'monitor'" class="main-grid">
       <div class="dag-area">
         <DAGCanvas />
       </div>
@@ -23,6 +30,9 @@
         <LogPanel />
         <CircuitBreakerPanel />
       </div>
+    </div>
+    <div v-else class="report-area">
+      <ReportView />
     </div>
   </div>
 </template>
@@ -32,8 +42,10 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import DAGCanvas from './components/DAGCanvas.vue'
 import LogPanel from './components/LogPanel.vue'
 import CircuitBreakerPanel from './components/CircuitBreakerPanel.vue'
+import ReportView from './views/ReportView.vue'
 import { useDAGStore } from './store/dag'
 const store = useDAGStore()
+const activeView = ref<'monitor' | 'report'>('monitor')
 const wfName = ref('data-pipeline')
 function create() { store.createWorkflow(wfName.value) }
 function run() { store.run() }
@@ -52,4 +64,5 @@ body{font-family:system-ui,sans-serif;background:#0c0c1d;color:#e0e0e0}
 .main-grid{display:grid;grid-template-columns:1fr 320px;flex:1;overflow:hidden}
 .dag-area{background:#0f0f23;position:relative;overflow:hidden}
 .side-area{display:flex;flex-direction:column;gap:8px;padding:8px;overflow-y:auto;background:#14142b}
+.report-area{flex:1;overflow:hidden;background:#0f0f23}
 </style>

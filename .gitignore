@@ -234,3 +234,7 @@ sandbox/
 *.pid
 *.seed
 *.pid.lock
+
+# Local Linux venv + SQLite data dir
+.venv-linux/
+backend/data/
