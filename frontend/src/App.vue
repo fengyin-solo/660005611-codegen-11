@@ -12,10 +12,14 @@
           <el-option value="fifo" label="FIFO"/><el-option value="priority" label="优先级"/><el-option value="max_concurrent" label="最大并发"/>
         </el-select>
         <el-button type="success" size="small" @click="run" :disabled="!store.workflow" :loading="store.loading">▶ 执行</el-button>
+        <el-radio-group v-model="activeView" size="small">
+          <el-radio-button label="monitor">执行监控</el-radio-button>
+          <el-radio-button label="report">执行报表</el-radio-button>
+        </el-radio-group>
         <span class="ws-dot" :class="{on:store.wsConnected}"></span>
       </div>
     </header>
-    <div class="main-grid">
+    <div v-if="activeView === 'monitor'" class="main-grid">
       <div class="dag-area">
         <DAGCanvas />
       </div>
@@ -24,6 +28,7 @@
         <CircuitBreakerPanel />
       </div>
     </div>
+    <ReportView v-else class="report-host" />
   </div>
 </template>
 
@@ -32,9 +37,11 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import DAGCanvas from './components/DAGCanvas.vue'
 import LogPanel from './components/LogPanel.vue'
 import CircuitBreakerPanel from './components/CircuitBreakerPanel.vue'
+import ReportView from './views/ReportView.vue'
 import { useDAGStore } from './store/dag'
 const store = useDAGStore()
 const wfName = ref('data-pipeline')
+const activeView = ref<'monitor' | 'report'>('report')
 function create() { store.createWorkflow(wfName.value) }
 function run() { store.run() }
 onMounted(() => store.connectWS())
@@ -52,4 +59,5 @@ body{font-family:system-ui,sans-serif;background:#0c0c1d;color:#e0e0e0}
 .main-grid{display:grid;grid-template-columns:1fr 320px;flex:1;overflow:hidden}
 .dag-area{background:#0f0f23;position:relative;overflow:hidden}
 .side-area{display:flex;flex-direction:column;gap:8px;padding:8px;overflow-y:auto;background:#14142b}
+.report-host{flex:1;overflow:hidden;background:#0f0f23}
 </style>

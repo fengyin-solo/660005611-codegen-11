@@ -1,11 +1,15 @@
-import asyncio, time, random, json, threading
+import asyncio, time, random, json, threading, math
 from collections import defaultdict, deque
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import Optional, List
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from . import report_store
 
 app = FastAPI(title="DAG Workflow Engine")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+report_store.init_db()
 
 ACTIVE_CLIENTS = []
 WORKFLOW_ID = 0
@@ -70,7 +74,11 @@ def create_workflow(req: WorkflowCreate):
 @app.post("/api/run")
 def run_workflow(req: RunRequest):
     dag = generate_dag_workflow("workflow")
-    t = threading.Thread(target=execute_workflow, args=(dag, req.workers, req.strategy), daemon=True)
+    # 本次执行的条数基数（近似对数正态，模拟不同批次数据量）
+    base_rows = max(1, int(50000 * math.exp(random.gauss(0, 0.25))))
+    execution_id = report_store.create_execution(req.workflowId, req.workers, req.strategy, base_rows)
+    t = threading.Thread(target=execute_workflow,
+                         args=(dag, req.workers, req.strategy, execution_id, base_rows), daemon=True)
     t.start()
     return {
         "workflow": {"id": req.workflowId, "name": "workflow", "nodes": dag["nodes"], "edges": dag["edges"]},
@@ -78,7 +86,7 @@ def run_workflow(req: RunRequest):
     }
 
 
-def execute_workflow(dag, workers, strategy):
+def execute_workflow(dag, workers, strategy, execution_id, base_rows):
     nodes = dag["nodes"]
     durations = dag["durations"]
     edges = dag["edges"]
@@ -96,6 +104,7 @@ def execute_workflow(dag, workers, strategy):
     failure_threshold = 3
     running_tasks = {}
     completed = set()
+    failed = set()
 
     def send_update(completed_flag=False):
         payload = {
@@ -151,12 +160,35 @@ def execute_workflow(dag, workers, strategy):
                         cb["state"] = "OPEN"
                         cb["cooldownUntil"] = now + 5
                         logs.append({"taskId": tid, "status": "CIRCUIT_OPEN", "timestamp": now, "message": f"熔断! {failure_threshold}次连续失败"})
+                elif info["will_fail"]:
+                    # 重试次数用尽：标记最终失败并落库（耗时/重试次数仍可在报表核对），
+                    # 不再放回队列，避免执行无限挂起
+                    node["status"] = "FAILED"
+                    node["endTime"] = now
+                    failed.add(tid)
+                    duration_ms = int((now - node["startTime"]) * 1000)
+                    try:
+                        report_store.record_stage(
+                            execution_id, tid, 0, duration_ms, node["retries"],
+                            node["startTime"], now, status="FAILED")
+                    except Exception:
+                        pass
+                    logs.append({"taskId": tid, "status": "FAILED", "timestamp": now, "message": f"{node['name']} 最终失败(重试{node['retries']}次)"})
                 else:
                     node["status"] = "SUCCESS"
                     node["endTime"] = now
                     completed.add(tid)
                     cb_state[tid]["failureCount"] = 0
                     cb_state[tid]["state"] = "CLOSED"
+                    # 落库该环节明细：耗时取最近一次开始到结束，条数随数据量基数浮动
+                    row_count = max(1, int(base_rows * random.uniform(0.92, 1.08)))
+                    duration_ms = int((now - node["startTime"]) * 1000)
+                    try:
+                        report_store.record_stage(
+                            execution_id, tid, row_count, duration_ms, node["retries"],
+                            node["startTime"], now)
+                    except Exception:
+                        pass
                     logs.append({"taskId": tid, "status": "SUCCESS", "timestamp": now, "message": f"完成 {node['name']}"})
                     for next_tid in adj[tid]:
                         in_degree[next_tid] -= 1
@@ -168,10 +200,62 @@ def execute_workflow(dag, workers, strategy):
             del running_tasks[tid]
 
         send_update()
+        if failed:
+            break
         if len(completed) == len(nodes):
             break
 
+    report_store.finish_execution(execution_id, "FAILED" if failed else "SUCCESS")
     send_update(True)
+
+
+# ----------------------------------------------------------------------------
+# 执行报表
+#
+# 三个接口共用 start/end（毫秒时间戳）与 stageIds 过滤条件，
+# 过滤对象统一为执行开始时间 execution.started_at，保证汇总、明细、趋势口径一致。
+# ----------------------------------------------------------------------------
+
+def _parse_range(start: Optional[int], end: Optional[int]):
+    now_ms = int(time.time() * 1000)
+    day_ms = 24 * 3600 * 1000
+    return start if start is not None else now_ms - 14 * day_ms, end if end is not None else now_ms
+
+
+@app.get("/api/reports/summary")
+def report_summary(
+    start: Optional[int] = None, end: Optional[int] = None,
+    stageIds: Optional[str] = Query(None, description="逗号分隔的环节 id"),
+):
+    start_ms, end_ms = _parse_range(start, end)
+    ids = [s for s in (stageIds.split(",") if stageIds else []) if s] or None
+    return report_store.get_summary(start_ms, end_ms, ids)
+
+
+@app.get("/api/reports/details")
+def report_details(
+    start: Optional[int] = None, end: Optional[int] = None,
+    stageIds: Optional[str] = Query(None, description="逗号分隔的环节 id"),
+    page: int = Query(1, ge=1), pageSize: int = Query(10, ge=1, le=200),
+):
+    start_ms, end_ms = _parse_range(start, end)
+    ids = [s for s in (stageIds.split(",") if stageIds else []) if s] or None
+    return report_store.get_details(start_ms, end_ms, ids, page, pageSize)
+
+
+@app.get("/api/reports/trend")
+def report_trend(
+    start: Optional[int] = None, end: Optional[int] = None,
+    limit: int = Query(10, ge=1, le=50),
+):
+    start_ms, end_ms = _parse_range(start, end)
+    return report_store.get_trend(start_ms, end_ms, limit)
+
+
+@app.get("/api/reports/stages")
+def report_stages():
+    return {"items": [{"stageId": sid, "stageName": name, "seq": i}
+                      for i, (sid, name, _) in enumerate(report_store.STAGE_DEFS)]}
 
 
 @app.websocket("/ws")
